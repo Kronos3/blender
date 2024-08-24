@@ -18,6 +18,7 @@
 #include "BLI_offset_indices.hh"
 #include "BLI_ordered_edge.hh"
 #include "BLI_set.hh"
+#include "BLI_shared_cache.hh"
 #include "BLI_utility_mixins.hh"
 
 #include "DNA_brush_enums.h"
@@ -405,9 +406,9 @@ using ActiveVert = std::variant<std::monostate, int, SubdivCCGCoord, BMVert *>;
 struct SculptSession : blender::NonCopyable, blender::NonMovable {
   /* Mesh data (not copied) can come either directly from a Mesh, or from a MultiresDM */
   struct { /* Special handling for multires meshes */
-    bool active;
-    MultiresModifierData *modifier;
-    int level;
+    bool active = false;
+    MultiresModifierData *modifier = nullptr;
+    int level = 0;
   } multires = {};
 
   /* Depsgraph for the Cloth Brush solver to get the colliders. */
@@ -469,6 +470,13 @@ struct SculptSession : blender::NonCopyable, blender::NonMovable {
   blender::Array<blender::float3, 0> deform_cos;
   /* Crazy-space deformation matrices. */
   blender::Array<blender::float3x3, 0> deform_imats;
+
+  /**
+   * Normals corresponding to the #deform_cos evaluated/deform positions. Stored as a #SharedCache
+   * for consistency with mesh caches in #MeshRuntime::vert_normals_cache.
+   */
+  blender::SharedCache<blender::Vector<blender::float3>> vert_normals_deform;
+  blender::SharedCache<blender::Vector<blender::float3>> face_normals_deform;
 
   /* Pool for texture evaluations. */
   ImagePool *tex_pool = nullptr;
@@ -575,6 +583,14 @@ struct SculptSession : blender::NonCopyable, blender::NonMovable {
   uchar last_automask_stroke_id = 0;
   std::unique_ptr<SculptTopologyIslandCache> topology_island_cache;
 
+ private:
+  /* In general, this value is expected to be valid (non-empty) as long as the cursor is over the
+   * mesh. Changing the underlying mesh type (e.g. enabling dyntopo, changing multires levels)
+   * should invalidate this value.
+   */
+  PBVHVertRef active_vert_ = PBVHVertRef{PBVH_REF_NONE};
+
+ public:
   SculptSession();
   ~SculptSession();
 
@@ -601,17 +617,16 @@ struct SculptSession : blender::NonCopyable, blender::NonMovable {
    *
    * \returns float3 at negative infinity if there is no currently active vertex
    */
-  blender::float3 active_vert_position(const Object &object) const;
+  blender::float3 active_vert_position(const Depsgraph &depsgraph, const Object &object) const;
 
   void set_active_vert(PBVHVertRef vert);
-
- private:
-  PBVHVertRef active_vert_ = PBVHVertRef{PBVH_REF_NONE};
+  void clear_active_vert();
 };
 
 void BKE_sculptsession_free(Object *ob);
 void BKE_sculptsession_free_deformMats(SculptSession *ss);
 void BKE_sculptsession_free_vwpaint_data(SculptSession *ss);
+void BKE_sculptsession_free_pbvh(SculptSession *ss);
 void BKE_sculptsession_bm_to_me(Object *ob, bool reorder);
 void BKE_sculptsession_bm_to_me_for_render(Object *object);
 int BKE_sculptsession_vertex_count(const SculptSession *ss);

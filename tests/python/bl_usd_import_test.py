@@ -5,12 +5,9 @@
 import math
 import pathlib
 import sys
-import unittest
 import tempfile
-from pxr import Usd
-from pxr import UsdShade
-from pxr import UsdGeom
-from pxr import Sdf
+import unittest
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 import bpy
 
@@ -727,7 +724,9 @@ class USDImportTest(AbstractUSDTest):
         self.assertFalse(attribute_name in blender_data.attributes)
 
     def test_import_attributes(self):
-        # Use the existing attributes file to create the USD test file
+        """Test importing objects with all attribute data types."""
+
+        # Use the existing attributes test file to create the USD file
         # for import. It is validated as part of the bl_usd_export test.
         bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "usd_attribute_test.blend"))
 
@@ -833,7 +832,9 @@ class USDImportTest(AbstractUSDTest):
         self.check_attribute_missing(curves, "sp_mat4x4")
 
     def test_import_attributes_varying(self):
-        # Use the existing attributes file to create the USD test file
+        """Test importing objects with time-varying positions, velocities, and attributes."""
+
+        # Use the existing attributes test file to create the USD file
         # for import. It is validated as part of the bl_usd_export test.
         bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "usd_attribute_varying_test.blend"))
         for frame in range(1, 16):
@@ -896,6 +897,132 @@ class USDImportTest(AbstractUSDTest):
                     blender_test_data,
                     usd_test_data,
                     f"Frame {frame}: {blender_mesh[i].name} test attributes do not match")
+
+    def test_import_shapes(self):
+        """Test importing USD Shape prims with time-varying attributes."""
+
+        infile = str(self.testdir / "usd_shapes_test.usda")
+        res = bpy.ops.wm.usd_import(filepath=infile)
+        self.assertEqual({'FINISHED'}, res, f"Unable to import USD file {infile}")
+
+        # Ensure we find the expected number of mesh objects
+        blender_objects = [ob for ob in bpy.data.objects if ob.type == 'MESH']
+        self.assertEqual(
+            6,
+            len(blender_objects),
+            f"Test scene {infile} should have 6 mesh objects; found {len(blender_objects)}")
+
+        # A MeshSequenceCache modifier should be present on every imported object
+        for ob in blender_objects:
+            self.assertTrue(len(ob.modifiers) == 1 and ob.modifiers[0].type ==
+                            'MESH_SEQUENCE_CACHE', f"{ob.name} has incorrect modifiers")
+
+    def test_import_id_props(self):
+        """Test importing object and data IDProperties."""
+
+        # Create our set of ID's with all relevant IDProperty types/values that we support
+        bpy.ops.object.empty_add()
+        bpy.ops.object.light_add()
+        bpy.ops.object.camera_add()
+        bpy.ops.mesh.primitive_plane_add()
+
+        ids = [ob if ob.type == 'EMPTY' else ob.data for ob in bpy.data.objects]
+        properties = [
+            True, "string", 1, 2.0, [1, 2], [1, 2, 3], [1, 2, 3, 4], [1.0, 2.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0, 4.0]
+        ]
+        for id in ids:
+            for i, p in enumerate(properties):
+                prop_name = "prop" + str(i)
+                id[prop_name] = p
+
+        # Export out this scene twice so we can test both the default "userProperties" namespace as
+        # well as a custom namespace
+        test_path1 = self.tempdir / "temp_idprops_userProperties_test.usda"
+        res = bpy.ops.wm.usd_export(filepath=str(test_path1), evaluation_mode="RENDER")
+        self.assertEqual({'FINISHED'}, res, f"Unable to export to {test_path1}")
+
+        custom_namespace = "customns"
+        test_path2 = self.tempdir / "temp_idprops_customns_test.usda"
+        res = bpy.ops.wm.usd_export(
+            filepath=str(test_path2),
+            custom_properties_namespace=custom_namespace,
+            evaluation_mode="RENDER")
+        self.assertEqual({'FINISHED'}, res, f"Unable to export to {test_path2}")
+
+        # Also write out another file using attribute types not natively writable by Blender
+        test_path3 = self.tempdir / "temp_idprops_extended_test.usda"
+        stage = Usd.Stage.CreateNew(str(test_path3))
+        xform = UsdGeom.Xform.Define(stage, '/empty')
+        xform.GetPrim().CreateAttribute("prop0", Sdf.ValueTypeNames.Half).Set(0.5)
+        xform.GetPrim().CreateAttribute("prop1", Sdf.ValueTypeNames.Float).Set(1.5)
+        xform.GetPrim().CreateAttribute("prop2", Sdf.ValueTypeNames.Token).Set("tokenstring")
+        xform.GetPrim().CreateAttribute("prop3", Sdf.ValueTypeNames.Asset).Set("assetstring")
+        xform.GetPrim().CreateAttribute("prop4", Sdf.ValueTypeNames.Half2).Set(Gf.Vec2h(0, 1))
+        xform.GetPrim().CreateAttribute("prop5", Sdf.ValueTypeNames.Half3).Set(Gf.Vec3h(0, 1, 2))
+        xform.GetPrim().CreateAttribute("prop6", Sdf.ValueTypeNames.Half4).Set(Gf.Vec4h(0, 1, 2, 3))
+        xform.GetPrim().CreateAttribute("prop7", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(0, 1))
+        xform.GetPrim().CreateAttribute("prop8", Sdf.ValueTypeNames.Float3).Set(Gf.Vec3f(0, 1, 2))
+        xform.GetPrim().CreateAttribute("prop9", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 1, 2, 3))
+        stage.GetRootLayer().Save()
+
+        # Helper functions to check IDProperty validity
+        import idprop
+
+        def assert_all_props_present(properties, ns):
+            ids = [ob if ob.type == 'EMPTY' else ob.data for ob in bpy.data.objects]
+            for id in ids:
+                for i, p in enumerate(properties):
+                    prop_name = (ns + ":" if ns != "" else "") + "prop" + str(i)
+                    prop = id[prop_name]
+                    value = prop.to_list() if type(prop) is idprop.types.IDPropertyArray else prop
+                    self.assertEqual(p, value, f"Property {prop_name} is incorrect")
+
+        def assert_no_props_present(properties, ns):
+            ids = [ob if ob.type == 'EMPTY' else ob.data for ob in bpy.data.objects]
+            for id in ids:
+                for i, p in enumerate(properties):
+                    prop_name = (ns + ":" if ns != "" else "") + "prop" + str(i)
+                    self.assertTrue(id.get(prop_name) is None, f"Property {prop_name} should not be present")
+
+        # Reload the empty file and test the relevant combinations of namespaces and import modes
+
+        infile = str(test_path1)
+        bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "empty.blend"))
+        res = bpy.ops.wm.usd_import(filepath=infile, attr_import_mode='USER')
+        self.assertEqual({'FINISHED'}, res, f"Unable to import USD file {infile}")
+        self.assertEqual(len(bpy.data.objects), 4)
+        assert_all_props_present(properties, "")
+
+        infile = str(test_path1)
+        bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "empty.blend"))
+        res = bpy.ops.wm.usd_import(filepath=infile, attr_import_mode='NONE')
+        self.assertEqual({'FINISHED'}, res, f"Unable to import USD file {infile}")
+        self.assertEqual(len(bpy.data.objects), 4)
+        assert_no_props_present(properties, "")
+
+        infile = str(test_path2)
+        bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "empty.blend"))
+        res = bpy.ops.wm.usd_import(filepath=infile, attr_import_mode='ALL')
+        self.assertEqual({'FINISHED'}, res, f"Unable to import USD file {infile}")
+        self.assertEqual(len(bpy.data.objects), 4)
+        assert_all_props_present(properties, custom_namespace)
+
+        infile = str(test_path2)
+        bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "empty.blend"))
+        res = bpy.ops.wm.usd_import(filepath=infile, attr_import_mode='USER')
+        self.assertEqual({'FINISHED'}, res, f"Unable to import USD file {infile}")
+        self.assertEqual(len(bpy.data.objects), 4)
+        assert_no_props_present(properties, custom_namespace)
+
+        infile = str(test_path3)
+        bpy.ops.wm.open_mainfile(filepath=str(self.testdir / "empty.blend"))
+        res = bpy.ops.wm.usd_import(filepath=infile, attr_import_mode='ALL')
+        self.assertEqual({'FINISHED'}, res, f"Unable to import USD file {infile}")
+        self.assertEqual(len(bpy.data.objects), 1)
+        properties = [
+            0.5, 1.5, "tokenstring", "assetstring", [0, 1], [0, 1, 2], [0, 1, 2, 3], [0, 1], [0, 1, 2], [0, 1, 2, 3]
+        ]
+        assert_all_props_present(properties, "")
 
 
 def main():
