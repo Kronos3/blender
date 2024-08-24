@@ -398,10 +398,10 @@ static void rna_def_workspace(BlenderRNA *brna)
   RNA_def_property_ui_text(prop, "Tools", "");
   rna_def_workspace_tools(brna, prop);
 
-  prop = RNA_def_property(srna, "object_mode", PROP_ENUM, PROP_NONE);
-  RNA_def_property_enum_items(prop, rna_enum_workspace_object_mode_items);
-  RNA_def_property_ui_text(
-      prop, "Object Mode", "Switch to this object mode when activating the workspace");
+  // prop = RNA_def_property(srna, "object_mode", PROP_ENUM, PROP_NONE);
+  // RNA_def_property_enum_items(prop, rna_enum_workspace_object_mode_items);
+  // RNA_def_property_ui_text(
+  //     prop, "Object Mode", "Switch to this object mode when activating the workspace");
 
   prop = RNA_def_property(srna, "use_pin_scene", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "flags", WORKSPACE_USE_PIN_SCENE);
